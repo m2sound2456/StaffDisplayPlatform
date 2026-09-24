@@ -1,0 +1,72 @@
+@import 'tailwindcss';
+
+/* ==========================================================================
+   Design tokens — dark, high contrast, readable from a distance on a tablet
+   (BLUEPRINT §21: big photos, few buttons, no unnecessary controls).
+   ========================================================================== */
+@theme {
+  --color-surface-950: #070b16;
+  --color-surface-900: #0f172a;
+  --color-surface-800: #17203a;
+  --color-surface-700: #22304f;
+
+  --color-accent-300: #67e8f9;
+  --color-accent-400: #22d3ee;
+  --color-accent-500: #06b6d4;
+
+  --color-ok-400: #34d399;
+  --color-warn-400: #fbbf24;
+  --color-danger-400: #f87171;
+
+  --font-sans: 'Inter', 'Noto Sans Thai', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface-950);
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+/* Tablet/kiosk helpers ------------------------------------------------------ */
+.display-surface {
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Keep the tablet from showing text selection handles while customers browse. */
+.display-surface * {
+  user-select: none;
+}
+
+/* Screen-burn mitigation: subtle drift animation for static display areas. */
+@media (prefers-reduced-motion: no-preference) {
+  .burn-in-drift {
+    animation: burn-in-drift 120s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes burn-in-drift {
+  from {
+    transform: translate3d(-6px, -4px, 0);
+  }
+  to {
+    transform: translate3d(6px, 4px, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .burn-in-drift {
+    animation: none;
+  }
+}

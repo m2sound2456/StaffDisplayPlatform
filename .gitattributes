@@ -1,0 +1,17 @@
+# Line endings: keep LF inside the repository (matches .editorconfig) and in the
+# working tree, so Windows checkouts do not create CRLF churn in diffs.
+* text=auto eol=lf
+
+# Generated / binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff2 binary
+*.pdf binary
+*.xlsx binary
+*.dump binary
+
+# Vendored / generated code that should not be diffed line by line
+frontend/package-lock.json -diff linguist-generated

@@ -1,0 +1,8 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Staff Display Platform">
+  <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <rect x="9" y="17" width="46" height="30" rx="4" fill="#f8fafc"/>
+  <circle cx="22" cy="29" r="7" fill="#22d3ee"/>
+  <ellipse cx="22" cy="42" rx="10" ry="5" fill="#22d3ee"/>
+  <rect x="34" y="26" width="16" height="4" rx="2" fill="#0f172a"/>
+  <rect x="34" y="36" width="9" height="4" rx="2" fill="#22d3ee"/>
+</svg>

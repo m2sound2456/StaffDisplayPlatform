@@ -1,0 +1,16 @@
+# Vite / React build output
+dist/
+dev-dist/
+*.local
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Test output
+coverage/
+
+# Local environment overrides (never commit real values)
+.env
+.env.local
+.env.*.local

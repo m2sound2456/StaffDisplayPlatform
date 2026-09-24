@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Staff Display Platform — repository ignore rules
+# ---------------------------------------------------------------------------
+
+# --- OS noise ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- Editors / IDE ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.swp
+
+# --- Secrets and local environment ---
+# Never commit real credentials. Use .env.example templates instead.
+.env
+.env.*
+!.env.example
+!*.env.example
+
+# --- Go (backend) ---
+backend/build/
+backend/.gotmp/
+*.exe
+*.test.exe
+*.out
+coverage.out
+
+# --- Node (frontend) ---
+node_modules/
+frontend/dist/
+frontend/dev-dist/
+frontend/coverage/
+*.tsbuildinfo
+
+# --- Local media storage (FG7 Media Storage — LocalStorage driver) ---
+backend/storage/
+
+# --- Logs / runtime artefacts ---
+*.log
+logs/
+tmp/
