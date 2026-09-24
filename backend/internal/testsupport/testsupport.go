@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/m2sound2456/staffdisplay/backend/internal/auth"
 	"github.com/m2sound2456/staffdisplay/backend/internal/config"
 	"github.com/m2sound2456/staffdisplay/backend/internal/database"
 	"github.com/m2sound2456/staffdisplay/backend/migrations"
@@ -99,6 +100,8 @@ func Reset(t *testing.T, db *database.Database) {
 	}
 
 	statements := []string{
+		"DROP TABLE IF EXISTS user_sessions CASCADE",
+		"DROP TABLE IF EXISTS users CASCADE",
 		"DROP TABLE IF EXISTS audit_logs CASCADE",
 		"DROP TABLE IF EXISTS stores CASCADE",
 		"DROP TABLE IF EXISTS tenants CASCADE",
@@ -140,6 +143,42 @@ func NewStore(t *testing.T, db *database.Database, tenantID uuid.UUID, name, slu
 	if err := db.Gorm().WithContext(t.Context()).
 		Exec("INSERT INTO stores (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)", id, tenantID, name, slug).Error; err != nil {
 		t.Fatalf("insert store %q: %v", slug, err)
+	}
+	return id
+}
+
+// NewUser inserts an account with a bcrypt hash of password and returns its id.
+// Account management is not part of FG4 (it lands with FG5), so schema and
+// integration tests create accounts directly — exactly like NewTenant does for
+// tenants. Pass a nil UUID for tenantID/storeID when the role does not carry
+// one (a super admin).
+func NewUser(t *testing.T, db *database.Database, tenantID, storeID uuid.UUID, email, password string, role auth.Role) uuid.UUID {
+	t.Helper()
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash password for %q: %v", email, err)
+	}
+
+	var tenant any
+	if tenantID != uuid.Nil {
+		tenant = tenantID
+	}
+	var store any
+	if storeID != uuid.Nil {
+		store = storeID
+	}
+
+	id := uuid.New()
+	displayName := email
+	if at := strings.Index(email, "@"); at > 0 {
+		displayName = email[:at]
+	}
+	if err := db.Gorm().WithContext(t.Context()).Exec(
+		"INSERT INTO users (id, tenant_id, store_id, email, display_name, password_hash, role) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		id, tenant, store, email, displayName, hash, string(role),
+	).Error; err != nil {
+		t.Fatalf("insert user %q: %v", email, err)
 	}
 	return id
 }

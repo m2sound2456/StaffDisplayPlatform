@@ -18,6 +18,8 @@ backend/migrations/0001_init_extensions_and_helpers.sql   ← FG1  pgcrypto + ci
                    0002_create_tenants.sql                ← FG2  tenants
                    0003_create_stores.sql                 ← FG2  stores
                    0004_create_audit_logs.sql             ← FG2  audit_logs (skeleton)
+                   0005_create_users.sql                  ← FG4  users (roles, bcrypt hashes)
+                   0006_create_user_sessions.sql          ← FG4  user_sessions (hashed refresh tokens)
                    embed.go        ← //go:embed *.sql
 backend/internal/database/migrate.go  ← loader + runner + checksums
 backend/internal/database/lock.go     ← advisory lock that serialises schema writers
@@ -97,11 +99,69 @@ Indexes: `stores_slug_active_key` (partial unique), `stores_tenant_id_idx`,
 Indexes: `audit_logs_store_created_idx`, `audit_logs_tenant_created_idx`,
 `audit_logs_action_created_idx`.
 
-FG2 ships the table **and** the write path (`internal/audit`). Nothing records
-yet: every privileged action starts auditing in the feature group that
-introduces the action (auth FG4, devices FG16–FG21, …).
+FG2 ships the table **and** the write path (`internal/audit`). FG4 is the first
+producer: `auth.login_succeeded`, `auth.login_failed`, `auth.logout`,
+`auth.token_refreshed`, `auth.refresh_rejected` (see §2.6). Every later
+privileged action records from the feature group that introduces it
+(devices FG16–FG21, …).
 
-### 2.4 Store slug uniqueness (decision)
+### 2.4 `users` — human accounts (migration 0005, FG4)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` | PK, `gen_random_uuid()` |
+| `tenant_id` | `uuid` | **scope**; `REFERENCES tenants(id) ON DELETE CASCADE`, NULL only for a super admin |
+| `store_id` | `uuid` | optional binding; `REFERENCES stores(id) ON DELETE SET NULL` |
+| `email` | `citext` | globally unique among live rows; the login form carries no tenant hint |
+| `display_name` | `text` | 1-120 characters, trimmed non-blank |
+| `password_hash` | `text` | **bcrypt only**: a CHECK rejects anything that is not a `$2a$/$2b$/$2y$` digest, so plaintext can never be stored |
+| `role` | `text` | `super_admin` \| `store_admin` |
+| `status` | `text` | `active` \| `disabled` |
+| `last_login_at` | `timestamptz` | stamped by a successful login |
+| `created_at`, `updated_at` | `timestamptz` | `updated_at` refreshed by `set_updated_at()` |
+| `deleted_at` | `timestamptz` | soft delete; releases the e-mail address |
+
+Constraints that mirror the domain rules: `users_scope_matches_role`
+(super admin ⇔ no tenant/store, store admin ⇒ a tenant), `users_email_format`,
+`users_display_name_not_blank`, `users_password_hash_is_bcrypt`. Indexes:
+`users_email_key` (partial unique over live rows), `users_tenant_id_idx`,
+`users_store_id_idx`.
+
+### 2.5 `user_sessions` — login sessions (migration 0006, FG4)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` | PK; the `sid` claim of the access token |
+| `user_id` | `uuid` | `REFERENCES users(id) ON DELETE CASCADE` |
+| `tenant_id`, `store_id` | `uuid` | scope snapshot (denormalised, for tenant-filtered session views) |
+| `refresh_token_hash` | `text` | **sha256 only** (CHECK `^[0-9a-f]{64}$`); the token itself is never stored |
+| `user_agent`, `ip` | `text`, `inet` | client fingerprint of the login, truncated user agent |
+| `created_at`, `last_used_at`, `expires_at` | `timestamptz` | sliding refresh window |
+| `revoked_at`, `revoked_reason` | `timestamptz`, `text` | set **together** (`logout` \| `revoked`), CHECK enforced |
+
+Indexes: unique `user_sessions_refresh_token_hash_key` (the `/auth/refresh`
+lookup), `user_sessions_user_created_idx`, `user_sessions_tenant_created_idx`,
+partial `user_sessions_live_user_idx`.
+
+Why a table when the access token is self contained: logout has to take effect
+immediately, the refresh token is rotated on every use (a replay fails), and the
+middleware re-reads role/status/tenant from `users` on every request.
+
+### 2.6 Authentication audit events (FG4)
+
+| Action | Actor | Metadata (never a secret/token/password) |
+|---|---|---|
+| `auth.login_succeeded` | user | `method`, `session_id` |
+| `auth.login_failed` | user, or system for an unknown address | `method`, `reason`, `email` (the attempted address) |
+| `auth.logout` | user | `method`, `session_id`, `reason` (only when already revoked) |
+| `auth.token_refreshed` | user | `method`, `session_id` |
+| `auth.refresh_rejected` | user, or system when the token resolves to no session | `method`, `reason` |
+
+Rejected access tokens are deliberately **not** audited per request: that would
+let unauthenticated traffic grow `audit_logs` without bound (FG37 revisits this
+together with rate limiting).
+
+### 2.7 Store slug uniqueness (decision)
 
 A store is addressed as `/s/{slug}` on the single platform domain, so the slug is
 the **only** routing key: it must be globally unique, not unique per tenant. That
@@ -122,10 +182,9 @@ identity (`id` + hashed token) and its own display configuration — stand or
 handheld, 1/4/8/12 items per page, auto slide, slide interval, loop, employee
 status — and is bound to a store only through `store_id` (FG16–FG21).
 
-### 2.5 Planned tables (next feature groups)
+### 2.8 Planned tables (next feature groups)
 
 ```text
-users, sessions / refresh_tokens   # FG4  authentication (hashed passwords, rotated refresh tokens)
 employees                          # FG6  availability status, display_order
 media_assets                       # FG7  metadata only; files live on disk (MediaStorage)
 devices                            # FG16 id, store_id, hashed device token, per-device display config
@@ -142,20 +201,24 @@ Indexing / constraint rules:
    deletion can never orphan rows across tenants.
 3. Status columns are `text` + a named CHECK constraint (documented values) instead of
    PostgreSQL enums: adding a value stays a plain forward migration.
-4. Device tokens and pairing codes are stored **hashed only**.
-5. Soft delete (`deleted_at`) is used for stores, employees and devices; hard delete
-   only via explicit retention jobs.
+4. Device tokens, pairing codes and refresh tokens are stored **hashed only**
+   (device tokens FG19, refresh tokens FG4).
+5. Soft delete (`deleted_at`) is used for stores, users, employees and devices; hard
+   delete only via explicit retention jobs.
+6. Credentials use a format CHECK (bcrypt digest for `users.password_hash`, sha256
+   hex for `user_sessions.refresh_token_hash`) so a plaintext value cannot be
+   stored even by a hand written statement.
 
 ---
 
 ## 3. Tenant isolation (executable from FG2 ✅, extended per feature group)
 
 ```text
-store admin (store A) ──token──▶ API ──▶ query WHERE tenant_id = A / store_id = A   (never A + B)
-device (store B)      ──token──▶ API ──▶ query WHERE store_id = B
+store admin (tenant A) ──JWT──▶ API ──▶ scope from the users row: tenant_id = A / store_id = A  (never A + B)
+device (store B)       ──token─▶ API ──▶ query WHERE store_id = B
 ```
 
-Implemented today (`internal/store`, `internal/database`):
+Implemented today (`internal/store`, `internal/auth`, `internal/database`):
 
 | Test | Expectation | Where |
 |---|---|---|
@@ -163,14 +226,18 @@ Implemented today (`internal/store`, `internal/database`):
 | Tenant A lists stores | only its own rows | same |
 | Tenant A updates a tenant B store | `ErrNotFound`, row unchanged (also when the payload claims tenant A) | same |
 | Tenant A deletes a tenant B store | `ErrNotFound`, row untouched | same |
-| Repository call without tenant scope | refused before any query (`ErrMissingTenantScope`) | `internal/store/repository_test.go` |
+| Repository call without tenant scope | refused before any query (`ErrMissingTenantScope`) | `internal/store/repository_test.go`, `internal/auth/repository_test.go` |
 | Slug lookup `/s/{slug}` | resolves exactly one store, case insensitive, deleted stores invisible | `internal/store/repository_integration_test.go`, `internal/database/schema_integration_test.go` |
 | Slug uniqueness | duplicate slug (any tenant, any case) → `ErrSlugTaken` → `409 conflict` | `internal/store/repository_integration_test.go` |
-| Database constraints | reserved/uppercase/malformed slugs, blank names, unknown status/timezone, non-object JSON and unknown tenants are rejected even from raw SQL | `internal/database/schema_integration_test.go` |
-| Cross-tenant cascade | deleting a tenant cascades to its stores; audit rows survive with NULL references | `internal/database/schema_integration_test.go`, `internal/audit/audit_integration_test.go` |
+| Tenant A reads/updates a tenant B **user** | `ErrNotFound`, no row touched | `internal/auth/repository_integration_test.go` |
+| Tenant A lists users | its own tenant only; the platform list stays behind the super admin role | same, `internal/auth/service_test.go` |
+| Tampered scope (claim/field names tenant B) | the scope is re-read from the account, so the query stays tenant A | `internal/auth/service_test.go`, `internal/server/auth_router_test.go` |
+| `/auth/me` with `?tenant_id=`/`?store_id=` | ignored: the response describes the caller's own account | `internal/server/auth_router_test.go` |
+| Database constraints | reserved/uppercase/malformed slugs, blank names, unknown status/timezone, non-object JSON, unknown tenants, plaintext passwords/tokens and inconsistent role/scope rows are rejected even from raw SQL | `internal/database/schema_integration_test.go`, `internal/auth/repository_integration_test.go` |
+| Cross-tenant cascade | deleting a tenant cascades to its stores, users and their sessions; audit rows survive with NULL references | `internal/database/schema_integration_test.go`, `internal/auth/repository_integration_test.go`, `internal/audit/audit_integration_test.go` |
 
 Still scheduled for the feature groups that introduce the actor (BLUEPRINT §22):
-device bootstrap isolation (FG19), revocation (FG21), super admin auditing (FG4+).
+device bootstrap isolation (FG19) and revocation (FG21).
 
 Integration tests run against `staffdisplay_test` when
 `TEST_DATABASE_INTEGRATION=1` is set (plus `DATABASE_PASSWORD`); every suite

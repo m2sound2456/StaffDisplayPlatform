@@ -21,11 +21,20 @@ import (
 
 // NewRouter builds the gin engine with the platform middleware stack and every
 // route group that exists today. Feature Group handlers are registered here as
-// they land (see docs/BLUEPRINT.md §25).
+// they land (see docs/BLUEPRINT.md §21).
 func NewRouter(cfg *config.Config, db *database.Database) *gin.Engine {
+	return newRouter(cfg, newHandlers(cfg, db))
+}
+
+// newRouter assembles the engine around a handler set, so tests can inject a
+// handler set with a fake authentication dependency.
+func newRouter(cfg *config.Config, api *handlers) *gin.Engine {
 	if cfg == nil {
 		fallback := config.Default()
 		cfg = &fallback
+	}
+	if api == nil {
+		api = newHandlers(cfg, nil)
 	}
 
 	if config.IsProduction(cfg) {
@@ -51,8 +60,6 @@ func NewRouter(cfg *config.Config, db *database.Database) *gin.Engine {
 		CORS(cfg.CORS.AllowedOrigins, allowUnknownOrigins),
 	)
 
-	api := newHandlers(cfg, db)
-
 	router.NoRoute(func(c *gin.Context) { NotFound(c, "endpoint not found") })
 	router.NoMethod(func(c *gin.Context) {
 		Fail(c, http.StatusMethodNotAllowed, CodeMethodNotAllowed, "method not allowed", nil)
@@ -68,7 +75,22 @@ func NewRouter(cfg *config.Config, db *database.Database) *gin.Engine {
 		v1.GET("/health", api.health)
 		v1.GET("/version", api.version)
 
-		// FG4  — authentication:      POST /auth/login, /auth/logout, GET /auth/me
+		// FG4 — authentication: human accounts (BLUEPRINT §5, docs/API.md §3).
+		// The credential is a JWT ("Authorization: Bearer <token>"); the tenant
+		// scope of every authenticated call comes from the account row, never
+		// from the request.
+		authenticated := RequireAuth(api.authService)
+		authGroup := v1.Group("/auth")
+		{
+			authGroup.POST("/login", api.login)
+			authGroup.POST("/refresh", api.refresh)
+			authGroup.POST("/logout", authenticated, api.logout)
+			authGroup.GET("/me", authenticated, api.me)
+			// Visible accounts: own tenant for a store admin, the platform for
+			// a super admin (BLUEPRINT §5).
+			authGroup.GET("/users", authenticated, api.listUsers)
+		}
+
 		// FG5  — stores:              GET|POST /stores, GET|PUT|DELETE /stores/:id
 		// FG6  — employees:           GET|POST /stores/:storeId/employees, ...
 		// FG16 — devices + pairing:   POST /stores/:storeId/devices/pairing, ...

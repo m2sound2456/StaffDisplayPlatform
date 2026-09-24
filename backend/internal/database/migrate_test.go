@@ -124,7 +124,8 @@ func TestEmbeddedMigrationsAreValid(t *testing.T) {
 
 // TestEmbeddedMigrationsCoverTheFoundationToSchemaSet pins the shipped
 // migration set: FG1 installs the helpers, FG2 the tenants/stores/audit_logs
-// tables. Renumbering or reordering must fail here.
+// tables and FG4 the users/sessions tables. Renumbering or reordering must fail
+// here.
 func TestEmbeddedMigrationsCoverTheFoundationToSchemaSet(t *testing.T) {
 	loaded, err := LoadMigrations(migrations.FS, ".")
 	if err != nil {
@@ -136,9 +137,11 @@ func TestEmbeddedMigrationsCoverTheFoundationToSchemaSet(t *testing.T) {
 		2: "create_tenants",
 		3: "create_stores",
 		4: "create_audit_logs",
+		5: "create_users",
+		6: "create_user_sessions",
 	}
 	if len(loaded) != len(want) {
-		t.Fatalf("embedded migrations = %d, want %d (update this test when FG2+ adds a migration)", len(loaded), len(want))
+		t.Fatalf("embedded migrations = %d, want %d (update this test when a feature group adds a migration)", len(loaded), len(want))
 	}
 	for _, migration := range loaded {
 		expected, ok := want[migration.Version]

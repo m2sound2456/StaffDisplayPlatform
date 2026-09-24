@@ -12,7 +12,9 @@ NNNN_snake_case_description.sql
 0002_create_tenants.sql                ← FG2  tenants
 0003_create_stores.sql                 ← FG2  stores (slug rules, soft delete, tenant FK cascade)
 0004_create_audit_logs.sql             ← FG2  audit_logs skeleton (append-only)
-0005_…                                 ← next feature group
+0005_create_users.sql                  ← FG4  users (roles, bcrypt hashes, tenant scope)
+0006_create_user_sessions.sql          ← FG4  user_sessions (hashed refresh tokens, revocation)
+0007_…                                 ← next feature group
 ```
 
 `NNNN` is a 4 digit version, strictly increasing. A version is **never** reused,

@@ -127,8 +127,34 @@ rotation must not be resolved silently.
 | `DATABASE_PASSWORD` | local PostgreSQL password | required, ≥ 12 chars, no weak/placeholder value | `openssl rand -base64 24` |
 
 The JWT secret is the root credential of the deployment: FG4 signs admin access
-tokens with it. Secret files live in `/etc/staffdisplay/` with `chmod 600` and
+tokens with it and verifies them against it (plus the rotation window). Secret
+files live in `/etc/staffdisplay/` with `chmod 600` and
 `chown staffdisplay:staffdisplay`.
+
+**First administrator (FG4, until FG5 adds user management)**
+
+FG4 has no provisioning endpoint, so the first super admin is created with SQL.
+`pgcrypto` (migration 0001) provides `crypt()`/`gen_salt()`, which produce the
+bcrypt digest the `users.password_hash` CHECK requires:
+
+```bash
+psql -U staffdisplay -h 127.0.0.1 -d staffdisplay <<'SQL'
+INSERT INTO users (email, display_name, password_hash, role)
+VALUES ('admin@example.com', 'Platform admin',
+        crypt('<strong password>', gen_salt('bf', 12)), 'super_admin');
+SQL
+```
+
+A store admin carries a tenant (and optionally a store) instead: pass
+`tenant_id`/`store_id` and the role `store_admin` — the schema rejects an
+inconsistent role/scope combination. Then verify the deployment:
+
+```bash
+curl -fsS -X POST https://display.example.com/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"<strong password>"}'   # tokens (never logged)
+curl -fsS https://display.example.com/api/v1/auth/me -H "Authorization: Bearer <access_token>"
+```
 
 **Rotation**
 
@@ -142,11 +168,13 @@ tokens with it. Secret files live in `/etc/staffdisplay/` with `chmod 600` and
    previous values are accepted; each must be as strong as the current key and
    must differ from it.
 3. Verify and restart:
-   `staffdisplay-server --check && systemctl restart staffdisplay`. Tokens signed
-   with the previous key stay valid until they expire
-   (`AUTH_REFRESH_TOKEN_TTL`, default 30 days).
-4. Once every client has re-authenticated (or the refresh TTL has passed), drop
-   the previous value and restart — the rotation is complete.
+   `staffdisplay-server --check && systemctl restart staffdisplay`. FG4 keeps
+   *verifying* tokens with a previous key but never *signs* with one, so access
+   tokens issued before the rotation stay valid until they expire
+   (`AUTH_ACCESS_TOKEN_TTL`, default 15 minutes — the refresh token is opaque, so
+   it is unaffected by the signing key).
+4. Once every client has re-authenticated (15 minutes plus clock skew is enough),
+   drop the previous value and restart — the rotation is complete.
 
 *Database password*
 
@@ -311,8 +339,10 @@ application must keep working without them.
    repeats `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
 7. Uploads (FG7) land in `backend/storage/` → move to object storage later via the
    `MediaStorage` abstraction; never store binaries in PostgreSQL.
-8. Logs: JSON to stdout, collected by journald/vector; audit log table for
-   privileged actions (FG5+).
+8. Logs: JSON to stdout, collected by journald/vector; the `audit_logs` table
+   records privileged actions from FG4 onwards (`auth.login_succeeded`,
+   `auth.login_failed`, `auth.logout`, `auth.token_refreshed`,
+   `auth.refresh_rejected`) and never contains a password, token or signing key.
 9. Backups (FG34):
    ```bash
    pg_dump --format=custom --file=/var/backups/staffdisplay-$(date +%F).dump staffdisplay
@@ -336,6 +366,7 @@ curl -fsS https://display.example.com/healthz
 curl -fsS https://display.example.com/readyz          # 503 until DB reachable
 curl -fsS https://display.example.com/api/v1/version
 curl -fsSI https://display.example.com/s/demo         # 200 text/html (SPA fallback)
+curl -sS -o /dev/null -w '%{http_code}\n' https://display.example.com/api/v1/auth/me   # 401 without credentials
 ```
 
 `--check` prints the environment, tier, merged config files, CORS origins and

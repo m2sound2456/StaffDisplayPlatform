@@ -6,9 +6,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 
+	"github.com/m2sound2456/staffdisplay/backend/internal/audit"
+	"github.com/m2sound2456/staffdisplay/backend/internal/auth"
 	"github.com/m2sound2456/staffdisplay/backend/internal/config"
 	"github.com/m2sound2456/staffdisplay/backend/internal/database"
+	"github.com/m2sound2456/staffdisplay/backend/internal/logger"
 	"github.com/m2sound2456/staffdisplay/backend/internal/version"
 )
 
@@ -48,13 +53,69 @@ type versionResponse struct {
 
 // handlers holds the dependencies of every HTTP handler.
 type handlers struct {
-	cfg       *config.Config
-	db        *database.Database
-	startedAt time.Time
+	cfg         *config.Config
+	db          *database.Database
+	authService *auth.Service
+	startedAt   time.Time
 }
 
 func newHandlers(cfg *config.Config, db *database.Database) *handlers {
-	return &handlers{cfg: cfg, db: db, startedAt: time.Now().UTC()}
+	return newHandlersWithAuth(cfg, db, newAuthService(cfg, db))
+}
+
+// newHandlersWithAuth builds the handler set with an explicit authentication
+// service, so tests can drive the HTTP surface without PostgreSQL.
+func newHandlersWithAuth(cfg *config.Config, db *database.Database, authService *auth.Service) *handlers {
+	return &handlers{
+		cfg:         cfg,
+		db:          db,
+		authService: authService,
+		startedAt:   time.Now().UTC(),
+	}
+}
+
+// newAuthService wires the FG4 authentication service from the configuration and
+// the database handle. A missing signing key (a hand built configuration, never
+// a validated deployment) leaves the service unconfigured: authentication then
+// answers 500 instead of accepting everything.
+func newAuthService(cfg *config.Config, db *database.Database) *auth.Service {
+	var gormDB *gorm.DB
+	if db != nil {
+		gormDB = db.Gorm()
+	}
+
+	var signer *auth.Signer
+	if cfg != nil {
+		built, err := auth.NewSigner(auth.SignerOptions{
+			Secret:          cfg.Auth.JWTSecret,
+			PreviousSecrets: cfg.Auth.PreviousSecrets,
+			AccessTokenTTL:  cfg.Auth.AccessTokenTTL,
+		})
+		switch {
+		case err != nil:
+			logger.Error("auth_signer_unavailable", zap.Error(err))
+		default:
+			signer = built
+			if window := built.RotationWindow(); window > 0 {
+				logger.Info("auth_rotation_window_active",
+					zap.Int("previous_keys", window),
+					zap.String("policy", "verify with the rotation window, sign with the current key"),
+				)
+			}
+		}
+	}
+
+	var refreshTTL time.Duration
+	if cfg != nil {
+		refreshTTL = cfg.Auth.RefreshTokenTTL
+	}
+
+	return auth.NewService(auth.ServiceOptions{
+		Repository:      auth.NewRepository(gormDB),
+		Audit:           audit.NewRepository(gormDB),
+		Signer:          signer,
+		RefreshTokenTTL: refreshTTL,
+	})
 }
 
 // liveness answers "is the process alive" and never touches dependencies.

@@ -87,6 +87,7 @@ internal/logger    zap structured logging
 internal/database  GORM/pgx connection + migration runner + schema lock
 internal/server    gin router, middleware, handlers, envelopes
 internal/store     store domain model, slug rules, tenant scoped repository, scope helpers
+internal/auth      users, roles, bcrypt passwords, JWT + rotation, sessions, authorization
 internal/audit     append-only audit trail recorder (§11.10)
 internal/testsupport  test-only PostgreSQL schema setup (integration tests)
 internal/version   build metadata injected via ldflags
@@ -156,9 +157,11 @@ https://display.example.com/readyz           readiness probe
 | **Store admin** | one store | employees, images, availability, display settings, content, devices, QR pairing |
 | **Display device** | one store | not a human user: `device_id`, `store_id`, hashed device token, name, status, `last_seen_at`, display configuration |
 
-Authentication for humans arrives in **FG4** (JWT access + refresh token, bcrypt
-password hashes, role claims). Device authentication arrives in **FG19**
-(`X-Device-Token`, revocable).
+Authentication for humans is **FG4 ✅** (JWT access + refresh token, bcrypt
+password hashes, role claims, session revocation). Device authentication is
+**FG19** (`X-Device-Token`, revocable) — a separate actor with its own credential,
+never a user account. The tenant/store scope of a request is re-read from the
+`users` row on every request, so a claim can never widen it (BLUEPRINT §3.2).
 
 ---
 
@@ -300,6 +303,27 @@ Implemented in FG1: request id propagation, panic recovery with JSON envelope,
 access logging, CORS allow-list with production wildcard rejection, security
 headers, DSN/password redaction in logs, aggregated configuration validation.
 
+Implemented in FG4 (human authentication, `internal/auth`):
+
+* bcrypt password hashes (cost 12) with a database CHECK that rejects anything
+  that is not a digest — plaintext can never be stored;
+* HS256 JWT access tokens signed with the hardened `AUTH_JWT_SECRET`; a key in
+  `AUTH_JWT_PREVIOUS_SECRETS` only ever *verifies* (rotation window), never signs;
+* refresh tokens as opaque 256 bit values stored as sha256 digests and rotated on
+  every use; sessions are revocable, so logout and account changes (`status`,
+  `role`, tenant/store) take effect on the next request;
+* a login answers the same `401` for a wrong password and an unknown address
+  (no account enumeration, comparable bcrypt cost), and the audit trail records
+  every success/failure without a password, token or signing key;
+* `RequireAuth` / `RequireRole` middleware with a fail-closed scope helper
+  (`ScopeOf`), so a route without a valid credential never reaches a repository;
+* the access log, the DSN and every diagnostic redact credentials; a test
+  (`TestAuthAccessLogNeverContainsCredentials`) captures the real log output of a
+  login/authenticated request and asserts it.
+
+Not yet (documented gaps): rate limiting of auth endpoints (FG37), password
+change/reset, MFA, refresh-token reuse detection, user management endpoints (FG5+).
+
 ---
 
 # 12. Data model
@@ -316,9 +340,9 @@ tenants ─┬─ stores ─┬─ users
 Column level details, indexes, constraints and the migration workflow are in
 `docs/DATABASE.md`. Migration tooling (embedded SQL, checksums, per-file
 transactions) exists since FG1; FG2 created `tenants`, `stores` and the
-`audit_logs` skeleton, and the remaining tables are created by FG4 (users),
-FG6 (employees), FG7 (media), FG15 (playlist/settings) and FG16 (devices,
-pairing codes).
+`audit_logs` skeleton, FG4 added `users` and `user_sessions`, and the remaining
+tables are created by FG6 (employees), FG7 (media), FG15 (playlist/settings) and
+FG16 (devices, pairing codes).
 
 ---
 
@@ -328,7 +352,7 @@ Base path `/api/v1` (details in `docs/API.md`):
 
 ```text
 FG1  ✅ GET /healthz · GET /readyz · GET /api/v1/health · GET /api/v1/version
-FG4     POST /auth/login · POST /auth/logout · GET /auth/me
+FG4  ✅ POST /auth/login · POST /auth/refresh · POST /auth/logout · GET /auth/me · GET /auth/users
 FG5     GET|POST /stores · GET|PUT|DELETE /stores/{id}
 FG6–9   GET|POST /stores/{storeId}/employees · PUT|DELETE /employees/{id}
         PATCH /employees/{id}/status · PATCH /employees/{id}/order
@@ -493,7 +517,7 @@ Definition of Done for every feature group:
 | FG1 | Project setup (repo, stack, config, logging, DB tooling, HTTP foundation, PWA shell, docs) | ✅ **complete** |
 | FG2 | Database schema (tenants, stores, audit_logs skeleton, slug rules, store repository + tenant isolation tests) | ✅ **complete** |
 | FG3 | Configuration hardening (per-environment profiles, secret handling + rotation, stricter production validation, store default overrides) | ✅ **complete** |
-| FG4 | Authentication (login/logout/me, JWT, roles, rate limiting) | ⬜ |
+| FG4 | Authentication (login/refresh/logout/me, JWT + signing-key rotation, bcrypt, roles, authorization middleware, audit events) | ✅ **complete** |
 | FG5 | Tenant/store model + admin store CRUD + isolation tests | ⬜ |
 
 ## Phase 2 — Employee
@@ -531,6 +555,9 @@ FG35 logging · FG36 monitoring · FG37 security review
 | Scenario | Expectation | Automated in |
 |---|---|---|
 | Multi-tenant isolation | Store A login reads/writes A only; any other store's resource returns `404` and the row is unchanged | FG5 |
+| Authentication | login → JWT → `GET /auth/me`; wrong password, unknown account, expired/malformed/foreign-signed token and a revoked session all answer `401`; a disabled account answers `403` on login | ✅ FG4 (`internal/auth`, `internal/server`) |
+| Signing-key rotation | a token signed with `AUTH_JWT_PREVIOUS_SECRETS` still verifies; new tokens are signed with the current key; dropping the old key ends the window | ✅ FG4 (`internal/auth/jwt_test.go`) |
+| Authorization | a store admin cannot reach a super-admin-only capability (`403`); the tenant scope is derived from the account, not from any request parameter | ✅ FG4 (`internal/server/auth_middleware_test.go`, `auth_router_test.go`) |
 | Device isolation | Device A bootstrap contains store A data only; Device B only store B | FG19 |
 | Revocation | After revoke the device cannot bootstrap or reconnect; access denied | FG21 |
 | Realtime | Admin edits an employee → the tablet updates without manual refresh | FG23 |
@@ -749,4 +776,75 @@ answer must never be "give each store its own server or database".
 4. Staging has no separate nginx server block yet (FG31); the staging origin is
    already carried by `config.staging.yaml` and `deploy/env.staging.example`.
 5. `--check` is not wired into a CI workflow file yet (no CI pipeline until FG31+).
+
+---
+
+## v1.6 — FG4 (authentication)
+
+**Decisions taken while implementing authentication**
+
+| # | Decision | Reason |
+|---|---|---|
+| D33 | A JWT access token carries a `sid` claim naming a `user_sessions` row, and every request resolves its session **and** its account from PostgreSQL | a purely stateless token cannot be revoked before `exp`; logout, a disabled account, a role change or a move to another tenant must take effect on the next request |
+| D34 | `github.com/golang-jwt/jwt/v5` signs and verifies the JWS, pinned to HS256 (`WithValidMethods`) | no hand-rolled crypto, and the parser distinguishes a *signature* failure from an expired/malformed token — exactly what the rotation rule needs |
+| D35 | Rotation rule: verify with the current `AUTH_JWT_SECRET` first, then the `AUTH_JWT_PREVIOUS_SECRETS` window **only** on a signature failure; previous keys never sign a new token | zero-downtime rotation without letting the window revive an expired token or accept a foreign algorithm |
+| D36 | The claim set (`sub`, `sid`, `role`, `tenant_id`, `store_id`) *mirrors* the account and is never the source of an authorization decision | the FG2 tenant isolation invariant stays intact: a claim the client holds cannot widen a query |
+| D37 | `users.password_hash` (bcrypt digest) and `user_sessions.refresh_token_hash` (sha256 hex) carry format CHECK constraints | "no plaintext credentials" is enforced by the schema, not only by the Go layer |
+| D38 | A wrong password and an unknown address answer the same `401` (with a dummy bcrypt comparison for the unknown case); `403` is reserved for a correct password on a disabled account | no account enumeration, and a caller who already proved the password learns nothing new |
+| D39 | A refresh token is rotated **in place** (the session id survives) | the old refresh token stops working immediately while the access token stays valid until `exp`; session-family reuse detection is revisited in FG37 |
+| D40 | Rejected *access* tokens are not audited per request, while login and refresh failures are | an audit row per unauthenticated request would let anonymous traffic grow `audit_logs` without bound |
+| D41 | `GET /auth/users` returns what the caller may see (own tenant for a store admin, the platform for a super admin) through an explicitly named platform query | the platform scope of §5 is a capability of the `super_admin` role, never a parameter a store admin could pass |
+| D42 | Account provisioning is not part of FG4 (no create/edit/disable endpoint); integration tests create accounts through `internal/testsupport` | keeps FG4 to authentication; user management belongs to FG5 with the store/tenant model |
+| D43 | Password policy and bcrypt cost are domain constants (`auth.MinPasswordLength`, `auth.BcryptCost = 12`) instead of configuration keys | a deployment cannot weaken the credential rules of the platform |
+
+**Delivered**
+
+* Migrations `0005_create_users`, `0006_create_user_sessions` (applied and
+  verified against PostgreSQL 16; `migrate status` → 6 applied, 0 pending).
+* `internal/auth`: user/session entities whose validation mirrors the database
+  constraints, bcrypt password hashing (`HashPassword`, `VerifyPassword`,
+  `VerifyPasswordConstantTime`), the `Signer` (HS256 issue/verify + the rotation
+  window), opaque refresh tokens stored as sha256 digests, a tenant-scoped
+  repository (users, sessions, platform listing) and the `Service` (login,
+  refresh, logout, authenticate, list) recording the audit events
+  `auth.login_succeeded`, `auth.login_failed`, `auth.logout`,
+  `auth.token_refreshed`, `auth.refresh_rejected`.
+* `internal/server`: `POST /auth/login`, `POST /auth/refresh`,
+  `POST /auth/logout`, `GET /auth/me`, `GET /auth/users`, the `RequireAuth` /
+  `RequireRole` middleware, the `PrincipalOf` / `ScopeOf` helpers the following
+  feature groups build on, and a bounded credential body reader.
+* Configuration: `AUTH_JWT_SECRET` (+ `_FILE`) and `AUTH_JWT_PREVIOUS_SECRETS`
+  (FG3) are now consumed; no YAML key and no new secret source was introduced.
+* Tests: **238 test functions / 481 cases including subtests, 0 failed,
+  0 skipped** with `TEST_DATABASE_INTEGRATION=1`; 75 of the functions are new in
+  `internal/auth` and 23 in `internal/server` (password hashing and verification,
+  JWT create/verify/expiry/malformed/unknown-key, the rotation window including
+  "a new token is always signed with the current key", login
+  success/failure/disabled/unknown account, logout revocation, refresh rotation
+  and replay rejection, `/me`, unauthenticated vs authenticated access, the role
+  matrix, tenant isolation at repository/service/HTTP level, the audit events and
+  their metadata, and credential-leak checks — including one that captures the
+  real access log of a login and asserts it holds no token, password or header).
+  Frontend: 59 tests green, `typecheck` / `lint` / `build` pass (unchanged).
+* Docs: `docs/API.md` §3 (FG4 endpoints, tokens, errors), `docs/DATABASE.md`
+  §2.4–§2.6 and §3, `README.md`, `docs/DEPLOYMENT.md` §2, this change log.
+
+**Known gaps carried into the next feature groups**
+
+1. No login **UI** yet: the frontend still shows the FG1 `/app` shell; the admin
+   sign-in screen (and token handling in `src/services`) arrives with the admin
+   application (FG5 ships the first authenticated screen).
+2. Rate limiting of `/auth/login` and `/auth/refresh` stays FG37 (nginx
+   `limit_req` until then); failed attempts are audited so brute force is visible.
+3. Account provisioning (create/edit/disable users, password reset, MFA) is not
+   implemented: FG5 adds user management, and a password change follows the same
+   audit + session-revocation rules.
+4. Refresh-token reuse detection (revoking a whole session family when an old
+   refresh token is replayed) is deferred to the FG37 security review; a replayed
+   token is rejected but does not yet invalidate the session.
+5. The first super admin still has to be created with SQL
+   (`docs/DEPLOYMENT.md` §2 documents the statement, including the pgcrypto
+   `crypt()`/`gen_salt('bf', 12)` form); FG5 replaces it with an admin flow.
+6. Per-device display defaults (stand/handheld, 1/4/8/12 items, auto slide,
+   interval, loop, employee status) remain FG16–FG21 — untouched by FG4.
 

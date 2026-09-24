@@ -70,6 +70,12 @@ They combine BLUEPRINT §24 with the concrete conventions adopted in FG1.
    config file or the repository. Diagnostics use
    `config.Config.Redacted()`/`Summary()`; `staffdisplay-server --check` proves a
    configuration (and the tier rules) without starting the service.
+10. Human authentication (FG4) is JWT + session: sign **only** with
+    `AUTH_JWT_SECRET`, verify with the current key first and then
+    `AUTH_JWT_PREVIOUS_SECRETS` (and only on a signature failure). The tenant/role
+    scope of a request is re-read from the `users` row on every request — never
+    taken from a token claim or a request parameter. Refresh tokens are stored
+    hashed (sha256) and rotated on use; passwords are bcrypt digests.
 
 ## 6. Testing rules
 
