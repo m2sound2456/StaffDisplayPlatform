@@ -20,6 +20,10 @@ Desktop.ini
 .env.*
 !.env.example
 !*.env.example
+# Frontend build-time defaults are intentionally tracked: they contain no secrets
+# and make `npm run dev` / `npm run build` work out of the box.
+!frontend/.env.development
+!frontend/.env.production
 
 # --- Go (backend) ---
 backend/build/
