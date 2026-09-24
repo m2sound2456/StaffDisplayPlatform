@@ -44,19 +44,46 @@ func connectTestDatabase(t *testing.T) *Database {
 	return db
 }
 
-// resetSchema removes every object the migration test creates.
+// resetSchema removes every object the migration test creates. Children are
+// dropped before their parents and with CASCADE so the shared set_updated_at()
+// helper can be removed even while the FG2 tables still have triggers on it.
 func resetSchema(t *testing.T, db *Database) {
 	t.Helper()
-	if err := db.Gorm().Exec("DROP TABLE IF EXISTS " + MigrationTable).Error; err != nil {
-		t.Fatalf("drop %s: %v", MigrationTable, err)
+
+	statements := []string{
+		"DROP TABLE IF EXISTS audit_logs CASCADE",
+		"DROP TABLE IF EXISTS stores CASCADE",
+		"DROP TABLE IF EXISTS tenants CASCADE",
+		"DROP TABLE IF EXISTS " + MigrationTable + " CASCADE",
+		"DROP FUNCTION IF EXISTS set_updated_at() CASCADE",
 	}
-	if err := db.Gorm().Exec("DROP FUNCTION IF EXISTS set_updated_at()").Error; err != nil {
-		t.Fatalf("drop set_updated_at(): %v", err)
+	for _, statement := range statements {
+		if err := db.Gorm().Exec(statement).Error; err != nil {
+			t.Fatalf("reset schema (%s): %v", statement, err)
+		}
 	}
+}
+
+// lockSchemaForTest takes the shared schema lock (the same advisory lock
+// `cmd/migrate up` uses) and releases it when the test ends. Without it this
+// suite could drop the FG2 tables while another package's integration test is
+// mid migration.
+func lockSchemaForTest(t *testing.T, db *Database) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	release, err := db.LockSchema(ctx)
+	if err != nil {
+		t.Fatalf("lock schema: %v", err)
+	}
+	t.Cleanup(release)
 }
 
 func TestMigrateAppliesEmbeddedMigrations(t *testing.T) {
 	db := connectTestDatabase(t)
+	lockSchemaForTest(t, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -115,6 +142,7 @@ func TestMigrateAppliesEmbeddedMigrations(t *testing.T) {
 
 func TestMigrateDetectsChecksumDrift(t *testing.T) {
 	db := connectTestDatabase(t)
+	lockSchemaForTest(t, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 

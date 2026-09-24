@@ -84,8 +84,11 @@ cmd/server         HTTP entrypoint + graceful shutdown
 cmd/migrate        versioned SQL migration CLI (embedded + --dir)
 internal/config    YAML + env + .env, validated per environment
 internal/logger    zap structured logging
-internal/database  GORM/pgx connection + migration runner
+internal/database  GORM/pgx connection + migration runner + schema lock
 internal/server    gin router, middleware, handlers, envelopes
+internal/store     store domain model, slug rules, tenant scoped repository, scope helpers
+internal/audit     append-only audit trail recorder (§11.10)
+internal/testsupport  test-only PostgreSQL schema setup (integration tests)
 internal/version   build metadata injected via ldflags
 ```
 
@@ -312,8 +315,10 @@ tenants ─┬─ stores ─┬─ users
 
 Column level details, indexes, constraints and the migration workflow are in
 `docs/DATABASE.md`. Migration tooling (embedded SQL, checksums, per-file
-transactions) exists since FG1; the tables themselves are created by FG2, FG4,
-FG5, FG6, FG7, FG15 and FG16.
+transactions) exists since FG1; FG2 created `tenants`, `stores` and the
+`audit_logs` skeleton, and the remaining tables are created by FG4 (users),
+FG6 (employees), FG7 (media), FG15 (playlist/settings) and FG16 (devices,
+pairing codes).
 
 ---
 
@@ -387,6 +392,7 @@ real screens land with their feature groups.
 │   ├── cmd/migrate/    migration CLI (up | status | version, --dir)
 │   ├── configs/        config.yaml · config.production.yaml
 │   ├── internal/       config · logger · database · server · version
+│   │                   store · audit · testsupport
 │   └── migrations/     NNNN_*.sql (embedded via embed.go)
 ├── frontend/           React + Vite + TypeScript PWA
 │   └── src/            app · components · features · lib · pages · services · db · pwa · styles
@@ -462,8 +468,8 @@ Definition of Done for every feature group:
 | FG | Title | Status |
 |---|---|---|
 | FG1 | Project setup (repo, stack, config, logging, DB tooling, HTTP foundation, PWA shell, docs) | ✅ **complete** |
-| FG2 | Database schema (tenants, stores, `schema_migrations` usage) | ⬜ next |
-| FG3 | Configuration hardening (secrets management, per-environment profiles) | ⬜ |
+| FG2 | Database schema (tenants, stores, audit_logs skeleton, slug rules, store repository + tenant isolation tests) | ✅ **complete** |
+| FG3 | Configuration hardening (secrets management, per-environment profiles) | ⬜ next |
 | FG4 | Authentication (login/logout/me, JWT, roles, rate limiting) | ⬜ |
 | FG5 | Tenant/store model + admin store CRUD + isolation tests | ⬜ |
 
@@ -606,6 +612,57 @@ answer must never be "give each store its own server or database".
 6. Single HTML shell with client-side routing; nginx `try_files` covers deep links
    (verified for `/s/{slug}` in FG1).
 7. Rate limiting is prepared in nginx but not enforced per endpoint yet (FG37).
+
+---
+
+## v1.4 — FG2 (database schema)
+
+**Decisions taken while building the schema**
+
+| # | Decision | Reason |
+|---|---|---|
+| D13 | Store slug is **globally** unique (partial unique index over live rows), not unique per tenant | `/s/{slug}` is the only public key on a single domain: it can only resolve one store, so a `(tenant_id, slug)` key would be unusable for display routing |
+| D14 | Slug columns are `citext` and the format CHECK is applied to `slug::text` | `citext` gives case-insensitive lookups without `lower(slug)`; the text cast is what rejects uppercase, so the extra lowercase CHECK was dropped as unreachable |
+| D15 | Status columns are `text` + a named CHECK constraint instead of PostgreSQL enums | adding a value stays a plain forward migration (no `ALTER TYPE` lock) and the ORM/serialisation stays simple |
+| D16 | `stores.deleted_at` soft delete + partial unique slug index | retiring a store releases its public slug for reuse while the retired row, its FKs and its audit trail survive |
+| D17 | `audit_logs.tenant_id` / `store_id` are `ON DELETE SET NULL` and the table has no `updated_at` | history must outlive the rows it refers to; audit rows are append-only |
+| D18 | Tenant isolation is enforced inside the repository by `store.Scope` + `ensureTenantScope` | a missing scope becomes a programming error instead of an unscoped query, and cross-tenant ids answer `ErrNotFound` (404) |
+| D19 | Schema writers are serialised by the PostgreSQL advisory lock `database.SchemaLockKey` | stops interleaved DDL from concurrent `migrate up` runs, and lets the integration test packages run in parallel |
+| D20 | New packages are small and single-purpose: `internal/store` (domain + repository + scope helpers), `internal/audit` (recorder skeleton), `internal/testsupport` (test-only schema setup) | one concern per package (AI_RULES §3); tenant CRUD itself stays in FG5 |
+
+**Delivered**
+
+* Migrations `0002_create_tenants`, `0003_create_stores`, `0004_create_audit_logs`
+  (applied and verified against PostgreSQL 16; `migrate status` → 4 applied, 0 pending).
+* `internal/store`: `Store` entity + validation (name, slug, status, timezone,
+  opening hours, logo url), slug rules shared with the DB and the frontend,
+  `Scope` store-scoped query helpers, tenant-scoped repository (create, get, get by
+  slug, list + filter/paging, update, soft delete, slug availability) with
+  PostgreSQL error mapping (`23505` → `ErrSlugTaken`, `23503` → `ErrTenantNotFound`).
+* `internal/audit`: append-only entry model + validated recorder (no caller yet).
+* `internal/testsupport`: PostgreSQL integration test setup with schema reset and
+  advisory locking.
+* Tests: 115 backend tests green, including tenant isolation (read/update/delete),
+  slug uniqueness and validation, soft delete + slug reuse, reserved path parity
+  between Go/DB/frontend, database constraint enforcement, trigger refresh,
+  cascade + audit survival, and migration set integrity.
+* Docs: `docs/DATABASE.md` rewritten around the implemented schema,
+  `backend/migrations/README.md`, `README.md`, this change log.
+
+**Known gaps carried into the next feature groups**
+
+1. No HTTP surface yet: store CRUD endpoints (`GET|POST /stores`, …) and their
+   request/response shapes land in FG5; FG2 ships domain + repository only.
+2. `tenants` has a table but no admin service; tenant CRUD is FG5 scope.
+3. `audit_logs` is a skeleton: nothing writes to it until the privileged actions
+   themselves exist (FG4+).
+4. Device identity and the per-device display configuration (stand/handheld,
+   1/4/8/12 items, auto slide, interval, loop, employee status) remain exactly as
+   planned for FG16 — devices are not modelled in the store schema.
+5. Role/authorisation middleware (FG4) still has to translate the repository
+   errors into HTTP status codes (`ErrNotFound` → 404, `ErrSlugTaken` → 409,
+   validation → 422).
+
 
 
 

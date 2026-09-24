@@ -8,7 +8,7 @@ They combine BLUEPRINT §24 with the concrete conventions adopted in FG1.
 1. Read `docs/BLUEPRINT.md` before any work. It wins over assumptions, tutorials
    and "best practice" opinions.
 2. If code and blueprint disagree, fix one of them **in the same commit** and
-   record the decision in the blueprint change log (§34).
+   record the decision in the blueprint change log (§26).
 3. `BLUEPRINT.md` at repository root is the archived original v1.2 input — do not
    edit it (except to fix a factual pointer).
 

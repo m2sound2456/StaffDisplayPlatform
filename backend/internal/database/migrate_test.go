@@ -122,6 +122,36 @@ func TestEmbeddedMigrationsAreValid(t *testing.T) {
 	}
 }
 
+// TestEmbeddedMigrationsCoverTheFoundationToSchemaSet pins the shipped
+// migration set: FG1 installs the helpers, FG2 the tenants/stores/audit_logs
+// tables. Renumbering or reordering must fail here.
+func TestEmbeddedMigrationsCoverTheFoundationToSchemaSet(t *testing.T) {
+	loaded, err := LoadMigrations(migrations.FS, ".")
+	if err != nil {
+		t.Fatalf("LoadMigrations() error = %v", err)
+	}
+
+	want := map[int]string{
+		1: "init_extensions_and_helpers",
+		2: "create_tenants",
+		3: "create_stores",
+		4: "create_audit_logs",
+	}
+	if len(loaded) != len(want) {
+		t.Fatalf("embedded migrations = %d, want %d (update this test when FG2+ adds a migration)", len(loaded), len(want))
+	}
+	for _, migration := range loaded {
+		expected, ok := want[migration.Version]
+		if !ok {
+			t.Errorf("unexpected migration version %d", migration.Version)
+			continue
+		}
+		if migration.Name != expected {
+			t.Errorf("migration %04d name = %q, want %q", migration.Version, migration.Name, expected)
+		}
+	}
+}
+
 func TestMigrationsAreOrderedStrictlyIncreasing(t *testing.T) {
 	loaded, err := LoadMigrations(migrations.FS, ".")
 	if err != nil {

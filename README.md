@@ -41,7 +41,9 @@ Single Domain + Path  (see BLUEPRINT §32)
 │   ├── cmd/server/          HTTP server entrypoint
 │   ├── cmd/migrate/         SQL migration CLI (embedded + --dir)
 │   ├── configs/             config.yaml / config.production.yaml
-│   ├── internal/            config, logger, database, server, version
+│   ├── internal/            config, logger, database, server, version,
+│   │                        store (domain + repository + scope helpers),
+│   │                        audit (audit trail recorder), testsupport (test setup)
 │   └── migrations/          versioned *.sql migrations (embedded)
 ├── frontend/                React + Vite + TypeScript PWA (Admin / Display / Setup)
 ├── deploy/                  nginx reverse proxy + production env template
@@ -104,6 +106,16 @@ cd backend;  go build ./...; go vet ./...; go test ./...
 cd frontend; npm run typecheck; npm run lint; npm run test; npm run build
 ```
 
+Database integration tests (tenant isolation, slug uniqueness, migration and
+schema checks) run against `staffdisplay_test` and are skipped unless enabled:
+
+```powershell
+cd backend
+$env:TEST_DATABASE_INTEGRATION = '1'
+$env:DATABASE_PASSWORD         = '<local postgres password>'
+go test ./...                  # every suite resets the schema under an advisory lock
+```
+
 ---
 
 ## 5. Environment variables
@@ -142,13 +154,16 @@ Frontend (`frontend/.env.development`, `.env.production`):
 | `/setup` | Device setup + QR pairing | FG1 shell ✅, pairing FG16+ |
 | `/ws` | Realtime WebSocket | FG22 |
 
+Store records now exist in the database (`tenants`, `stores`, `audit_logs` — FG2 ✅),
+but no route serves them yet: the store CRUD API is FG5.
+
 ---
 
 ## 7. Feature Group roadmap (BLUEPRINT §25)
 
 | Phase | Feature Groups | Status |
 |---|---|---|
-| 1 — Foundation | **FG1 project setup ✅**, FG2 database, FG3 configuration, FG4 authentication, FG5 tenant/store model | 🟡 in progress |
+| 1 — Foundation | **FG1 project setup ✅**, **FG2 database schema ✅**, FG3 configuration, FG4 authentication, FG5 tenant/store model | 🟡 in progress |
 | 2 — Employee | FG6 CRUD, FG7 image upload, FG8 status, FG9 ordering | ⬜ |
 | 3 — Display | FG10 display page, FG11 responsive tablet UI, FG12 staff slide, FG13 promotion slide, FG14 QR slide, FG15 playlist | ⬜ |
 | 4 — Device | FG16 device model, FG17 pairing code, FG18 QR pairing, FG19 device auth, FG20 management, FG21 revoke | ⬜ |
@@ -156,5 +171,5 @@ Frontend (`frontend/.env.development`, `.env.production`):
 | 6 — Offline/PWA | FG27 service worker, FG28 IndexedDB cache, FG29 offline display, FG30 automatic sync | ⬜ |
 | 7 — Production | FG31 nginx, FG32 HTTPS, FG33 DNS, FG34 backup, FG35 logging, FG36 monitoring, FG37 security review | ⬜ |
 
-FG1 decisions, deviations from the v1.2 input and open items are recorded in
-[`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) §34 (change log).
+FG1/FG2 decisions, deviations from the v1.2 input and open items are recorded in
+[`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) §26 (change log).

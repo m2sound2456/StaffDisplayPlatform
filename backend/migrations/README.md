@@ -8,10 +8,11 @@ Forward-only, versioned SQL migrations for the single shared PostgreSQL database
 ```text
 NNNN_snake_case_description.sql
 
-0001_init_extensions_and_helpers.sql   ← FG1 (foundation)
-0002_create_tenants_and_stores.sql     ← FG2
-0003_create_users.sql                  ← FG4
-...
+0001_init_extensions_and_helpers.sql   ← FG1  pgcrypto + citext + set_updated_at()
+0002_create_tenants.sql                ← FG2  tenants
+0003_create_stores.sql                 ← FG2  stores (slug rules, soft delete, tenant FK cascade)
+0004_create_audit_logs.sql             ← FG2  audit_logs skeleton (append-only)
+0005_…                                 ← next feature group
 ```
 
 `NNNN` is a 4 digit version, strictly increasing. A version is **never** reused,
@@ -38,6 +39,10 @@ go run ./cmd/migrate version   # current schema version
 # deploy from a plain directory instead of the embedded FS
 go run ./cmd/migrate up --dir /opt/staffdisplay/server/migrations
 ```
+
+`up` takes the PostgreSQL advisory lock `database.SchemaLockKey` before applying
+anything, so two concurrent applies (or an integration test suite resetting the
+schema) queue instead of interleaving DDL.
 
 The embedded copy is provided by `embed.go` (`//go:embed *.sql`), so the built
 binary is self contained. `--dir` is only needed when operators ship raw SQL.

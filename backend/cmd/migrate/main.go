@@ -96,6 +96,14 @@ func runUp(dir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
 	defer cancel()
 
+	// One schema writer at a time: a second `migrate up` (or a test suite
+	// resetting the schema) waits here instead of interleaving DDL.
+	release, err := db.LockSchema(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	fmt.Printf("target: %s\n", db.Options().RedactedDSN())
 	applied, err := db.Migrate(ctx, migrationList)
 	if err != nil {
