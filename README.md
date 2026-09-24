@@ -38,15 +38,15 @@ Single Domain + Path  (see BLUEPRINT §32)
 ```text
 .
 ├── backend/                 Go API (Gin + GORM + zap + viper)
-│   ├── cmd/server/          HTTP server entrypoint
+│   ├── cmd/server/          HTTP server entrypoint (`--check` validates configuration)
 │   ├── cmd/migrate/         SQL migration CLI (embedded + --dir)
-│   ├── configs/             config.yaml / config.production.yaml
+│   ├── configs/             config.yaml (shared base) + config.<env>.yaml profiles
 │   ├── internal/            config, logger, database, server, version,
 │   │                        store (domain + repository + scope helpers),
 │   │                        audit (audit trail recorder), testsupport (test setup)
 │   └── migrations/          versioned *.sql migrations (embedded)
 ├── frontend/                React + Vite + TypeScript PWA (Admin / Display / Setup)
-├── deploy/                  nginx reverse proxy + production env template
+├── deploy/                  nginx reverse proxy + staging/production env templates
 ├── docs/                    BLUEPRINT, API, DATABASE, DEPLOYMENT, AI_RULES
 ├── scripts/                 local helper scripts (db create, icon generation)
 └── BLUEPRINT.md             archived original v1.2 planning input
@@ -118,28 +118,61 @@ go test ./...                  # every suite resets the schema under an advisory
 
 ---
 
-## 5. Environment variables
+## 5. Configuration
 
-Backend (`backend/.env`, see `backend/.env.example`):
+Precedence, lowest to highest: built-in defaults → `backend/configs/config.yaml`
+(shared base) → `backend/configs/config.<APP_ENV>.yaml` (environment profile) →
+environment variables → `*_FILE` secret files. `CONFIG_PATH` replaces the base and
+the profile with one explicit file. Details and the full validation matrix:
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) §1.
+
+| `APP_ENV` | Tier | Profile | Validated for |
+|---|---|---|---|
+| `development` (default) | relaxed | `config.development.yaml` | local machine, console logs, localhost origins |
+| `staging` | hardened | `config.staging.yaml` | staging host — strong secrets required |
+| `production` | strict | `config.production.yaml` | live deployment — every hardening rule |
+
+An unknown `APP_ENV` is a startup error (no silent fallback). Verify a
+configuration without starting the service:
+
+```powershell
+cd backend
+$env:APP_ENV = 'production'
+go run ./cmd/server --check      # prints the effective config with secrets masked
+```
+
+Backend variables (`backend/.env`, see `backend/.env.example`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `APP_ENV` | `development` | `development` \| `production` (config file selection + strict validation) |
-| `CONFIG_PATH` | — | Explicit YAML config path (overrides `APP_ENV` selection) |
+| `APP_ENV` | `development` | `development` \| `staging` \| `production` (profile + validation tier) |
+| `CONFIG_PATH` | — | Explicit YAML config path (replaces base + profile) |
 | `SERVER_HOST` / `SERVER_PORT` | `0.0.0.0` / `8080` | HTTP listener |
 | `SERVER_TLS_ENABLED` + cert/key | `false` | App-level TLS (only when TLS is not terminated at nginx) |
 | `DATABASE_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_NAME` / `_SSLMODE` / `_TIMEZONE` | `127.0.0.1` / `5432` / `postgres` / — / `staffdisplay` / `disable` / `Asia/Bangkok` | PostgreSQL |
 | `DATABASE_MAX_OPEN_CONNECTIONS` / `_MAX_IDLE_CONNECTIONS` / `_CONNECTION_MAX_LIFETIME` | `25` / `5` / `30m` | Connection pool |
-| `LOGGING_DEVELOPMENT` / `LOGGING_LEVEL` / `LOGGING_ENCODING` | `true` / `info` / `console` | zap logger |
-| `AUTH_JWT_SECRET` | dev placeholder | **FG4** signing key (strong + required in production) |
-| `CORS_ALLOWED_ORIGINS` | dev localhost origins | comma separated; `*` rejected in production |
+| `LOGGING_DEVELOPMENT` / `LOGGING_LEVEL` / `LOGGING_ENCODING` | `true` / `info` / `console` | zap logger (production requires `json`) |
+| `AUTH_JWT_SECRET` | dev placeholder | **FG4** signing key (≥ 32 chars, no placeholder, in staging/production) |
+| `AUTH_JWT_SECRET_FILE` | — | Secret file alternative to `AUTH_JWT_SECRET` (preferred in production) |
+| `AUTH_JWT_PREVIOUS_SECRETS` (+ `_FILE`) | — | Rotation window: previous keys still accepted (max 2) |
+| `DATABASE_PASSWORD_FILE` | — | Secret file alternative to `DATABASE_PASSWORD` |
+| `CORS_ALLOWED_ORIGINS` | dev localhost origins | comma separated bare origins; `*` rejected |
+| `STORE_DEFAULT_TIMEZONE` / `STORE_DEFAULT_STATUS` | `Asia/Bangkok` / `active` | Store defaults (FG5) |
+| `STORE_SLUG_MIN_LENGTH` / `_MAX_LENGTH` / `_AUTO_GENERATE` / `_EXTRA_RESERVED_SLUGS` | `1` / `63` / `true` / — | Slug policy (can only tighten the DB rules) |
 | `APP_SHUTDOWN_TIMEOUT` | `15s` | Graceful shutdown budget |
 
-Frontend (`frontend/.env.development`, `.env.production`):
+**Secrets** never belong in a YAML config file (startup rejects them), in the
+repository or in a log line — `Config.Summary()`/`Redacted()` mask every value.
+Prefer `*_FILE` variables (`chmod 600`, systemd `LoadCredential=`) in
+staging/production; rotation guidance is in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) §2.
+
+Frontend profiles (Vite modes, `.env.development` / `.env.staging` /
+`.env.production`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | `/api/v1` | REST base URL (same-origin in production) |
+| `VITE_API_BASE_URL` | `/api/v1` | REST base; must stay same-origin outside development (build fails otherwise) |
 | `VITE_DEFAULT_STORE_SLUG` | `demo` | Slug used by `/s/{slug}` helpers |
 
 ---
@@ -163,7 +196,7 @@ but no route serves them yet: the store CRUD API is FG5.
 
 | Phase | Feature Groups | Status |
 |---|---|---|
-| 1 — Foundation | **FG1 project setup ✅**, **FG2 database schema ✅**, FG3 configuration, FG4 authentication, FG5 tenant/store model | 🟡 in progress |
+| 1 — Foundation | **FG1 project setup ✅**, **FG2 database schema ✅**, **FG3 configuration hardening ✅**, FG4 authentication, FG5 tenant/store model | 🟡 in progress |
 | 2 — Employee | FG6 CRUD, FG7 image upload, FG8 status, FG9 ordering | ⬜ |
 | 3 — Display | FG10 display page, FG11 responsive tablet UI, FG12 staff slide, FG13 promotion slide, FG14 QR slide, FG15 playlist | ⬜ |
 | 4 — Device | FG16 device model, FG17 pairing code, FG18 QR pairing, FG19 device auth, FG20 management, FG21 revoke | ⬜ |
@@ -171,5 +204,5 @@ but no route serves them yet: the store CRUD API is FG5.
 | 6 — Offline/PWA | FG27 service worker, FG28 IndexedDB cache, FG29 offline display, FG30 automatic sync | ⬜ |
 | 7 — Production | FG31 nginx, FG32 HTTPS, FG33 DNS, FG34 backup, FG35 logging, FG36 monitoring, FG37 security review | ⬜ |
 
-FG1/FG2 decisions, deviations from the v1.2 input and open items are recorded in
-[`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) §26 (change log).
+FG1/FG2/FG3 decisions, deviations from the v1.2 input and open items are recorded
+in [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) §26 (change log).

@@ -1,0 +1,30 @@
+# =============================================================================
+# Staff Display Platform — staging profile (APP_ENV=staging)
+# =============================================================================
+# Pre-production acceptance: production credentials and origin rules, staging
+# host. Credentials are required and must be strong (hardened tier), while the
+# transport to the staging database and the log format may still be relaxed.
+#
+# Secrets come from the environment or a *_FILE secret file — never from here.
+# =============================================================================
+
+server:
+  host: 127.0.0.1
+
+logging:
+  development: false
+  encoding: json
+
+database:
+  user: staffdisplay
+  # A staging database may live on another host without a trusted CA.
+  sslmode: prefer
+
+cors:
+  # Single domain + path: exactly the staging origin (BLUEPRINT §32).
+  allowed_origins:
+    - https://staging.display.example.com
+
+store:
+  slug:
+    min_length: 3

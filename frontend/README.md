@@ -14,24 +14,38 @@ routed by path, never by subdomain (BLUEPRINT §32).
 ## Commands
 
 ```bash
-npm install          # install dependencies
-npm run dev          # dev server on http://127.0.0.1:5173 (/api proxied to :8080)
-npm run typecheck    # tsc --noEmit (strict)
-npm run lint         # eslint (flat config, typescript-eslint)
-npm run format       # prettier --write
-npm run test         # vitest run (jsdom)
-npm run build        # typecheck + production build -> dist/
-npm run preview      # serve the production build locally
-npm run icons        # regenerate public/icons + favicon.svg (scripts/generate-icons.ps1)
+npm install            # install dependencies
+npm run dev            # dev server on http://127.0.0.1:5173 (/api proxied to :8080)
+npm run dev:staging    # dev server using the staging profile (.env.staging)
+npm run typecheck      # tsc --noEmit (strict)
+npm run lint           # eslint (flat config, typescript-eslint)
+npm run format         # prettier --write
+npm run test           # vitest run (jsdom)
+npm run build          # typecheck + production build -> dist/
+npm run build:staging  # typecheck + staging build -> dist/
+npm run preview        # serve the production build locally
+npm run icons          # regenerate public/icons + favicon.svg (scripts/generate-icons.ps1)
 ```
 
-## Environment
+## Environment profiles
+
+One profile per environment (FG3), loaded by Vite mode: `.env.development`
+(`dev`), `.env.staging` (`dev:staging`, `build:staging`) and `.env.production`
+(`build`). `.env.example` documents local overrides (copy to `.env.local`, which
+is git-ignored).
 
 | Variable                  | Default                 | Purpose                                     |
 | ------------------------- | ----------------------- | ------------------------------------------- |
-| `VITE_API_BASE_URL`       | `/api/v1`               | REST base (same origin in production)       |
+| `VITE_API_BASE_URL`       | `/api/v1`               | REST base — same origin outside development |
 | `VITE_DEFAULT_STORE_SLUG` | `demo`                  | slug used by landing shortcuts              |
 | `VITE_DEV_API_TARGET`     | `http://127.0.0.1:8080` | dev proxy target (read by `vite.config.ts`) |
+
+`src/lib/envProfile.ts` resolves `VITE_API_BASE_URL` and **fails the build** when a
+staging/production profile points at an absolute URL: the SPA and the API share
+the platform origin (single domain + path, BLUEPRINT §32), so an absolute base
+would need CORS and break the architecture. Only development may use an absolute
+`http://127.0.0.1:…` URL. No secret is ever placed in a frontend environment
+file — only `VITE_*` values reach the bundle.
 
 ## Structure
 

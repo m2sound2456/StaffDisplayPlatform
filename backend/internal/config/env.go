@@ -6,10 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/m2sound2456/staffdisplay/backend/internal/store"
 )
 
 // applyEnv overlays environment variables on top of cfg. Every supported
-// variable is documented in README.md §5 and backend/.env.example.
+// variable is documented in README.md §5, backend/.env.example and
+// docs/DEPLOYMENT.md §2.
 func applyEnv(cfg *Config) error {
 	var err error
 
@@ -68,7 +71,11 @@ func applyEnv(cfg *Config) error {
 	}
 
 	// --- auth (used from FG4 onwards) ---
+	// AUTH_JWT_SECRET is also accepted as AUTH_JWT_SECRET_FILE (see secrets.go).
 	envString("AUTH_JWT_SECRET", &cfg.Auth.JWTSecret)
+	if raw, ok := lookupEnv("AUTH_JWT_PREVIOUS_SECRETS"); ok && raw != "" {
+		cfg.Auth.PreviousSecrets = splitSecretList(raw)
+	}
 	if err = envDuration("AUTH_ACCESS_TOKEN_TTL", &cfg.Auth.AccessTokenTTL); err != nil {
 		return err
 	}
@@ -77,8 +84,28 @@ func applyEnv(cfg *Config) error {
 	}
 
 	// --- cors ---
-	if raw, ok := lookupEnv("CORS_ALLOWED_ORIGINS"); ok {
+	// An empty variable keeps the profile value: an unset (or blank) variable in
+	// a systemd EnvironmentFile must not silently wipe the allow-list.
+	if raw, ok := lookupEnv("CORS_ALLOWED_ORIGINS"); ok && raw != "" {
 		cfg.CORS.AllowedOrigins = splitList(raw)
+	}
+
+	// --- store defaults (consumed by the store service from FG5) ---
+	envString("STORE_DEFAULT_TIMEZONE", &cfg.Store.DefaultTimezone)
+	if raw, ok := lookupEnv("STORE_DEFAULT_STATUS"); ok && raw != "" {
+		cfg.Store.DefaultStatus = store.Status(strings.ToLower(raw))
+	}
+	if err = envInt("STORE_SLUG_MIN_LENGTH", &cfg.Store.Slug.MinLength); err != nil {
+		return err
+	}
+	if err = envInt("STORE_SLUG_MAX_LENGTH", &cfg.Store.Slug.MaxLength); err != nil {
+		return err
+	}
+	if err = envBool("STORE_SLUG_AUTO_GENERATE", &cfg.Store.Slug.AutoGenerate); err != nil {
+		return err
+	}
+	if raw, ok := lookupEnv("STORE_SLUG_EXTRA_RESERVED_SLUGS"); ok && raw != "" {
+		cfg.Store.Slug.ExtraReservedSlugs = splitList(raw)
 	}
 
 	return nil

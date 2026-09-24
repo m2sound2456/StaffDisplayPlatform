@@ -47,10 +47,11 @@ func TestLoadReadsSelectedConfigFile(t *testing.T) {
 
 	// APP_ENV=production switches to config.production.yaml.
 	t.Setenv("APP_ENV", EnvProduction)
-	t.Setenv("DATABASE_PASSWORD", "secret")
+	t.Setenv("DATABASE_PASSWORD", "production-secret")
 	t.Setenv("AUTH_JWT_SECRET", strings.Repeat("x", MinProductionSecretLength))
 	t.Setenv("DATABASE_SSLMODE", "require")
 	t.Setenv("LOGGING_DEVELOPMENT", "false")
+	t.Setenv("LOGGING_ENCODING", "json")
 	t.Setenv("CORS_ALLOWED_ORIGINS", "https://display.example.com")
 
 	prodCfg, err := Load()

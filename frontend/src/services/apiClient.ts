@@ -1,3 +1,4 @@
+import { resolveApiBaseUrl } from '@/lib/envProfile'
 import type { ApiEnvelope, ApiErrorCode, ApiErrorEnvelope } from '@/types/api'
 
 /**
@@ -11,8 +12,8 @@ import type { ApiEnvelope, ApiErrorCode, ApiErrorEnvelope } from '@/types/api'
  * Components must not call fetch directly (see docs/AI_RULES.md §3).
  */
 
-/** REST base URL. `/api/v1` on the platform origin unless overridden. */
-export const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL ?? '/api/v1')
+/** REST base URL. `/api/v1` on the platform origin unless a profile overrides it. */
+export const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL, import.meta.env.MODE)
 
 export type QueryValue = string | number | boolean | null | undefined
 
@@ -44,11 +45,6 @@ export class ApiError extends Error {
   get isNetworkError(): boolean {
     return this.status === 0
   }
-}
-
-function normalizeBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
-  return trimmed === '' ? '/api/v1' : trimmed
 }
 
 /** Builds the absolute request URL for a path plus optional query values. */

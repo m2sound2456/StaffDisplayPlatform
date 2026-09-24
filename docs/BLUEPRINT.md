@@ -388,9 +388,9 @@ real screens land with their feature groups.
 ```text
 .
 ├── backend/            Go API
-│   ├── cmd/server/     HTTP entrypoint (graceful shutdown)
+│   ├── cmd/server/     HTTP entrypoint (graceful shutdown, `--check` config gate)
 │   ├── cmd/migrate/    migration CLI (up | status | version, --dir)
-│   ├── configs/        config.yaml · config.production.yaml
+│   ├── configs/        config.yaml base + config.development|staging|production.yaml
 │   ├── internal/       config · logger · database · server · version
 │   │                   store · audit · testsupport
 │   └── migrations/     NNNN_*.sql (embedded via embed.go)
@@ -426,18 +426,41 @@ subscription billing, complex analytics, per-store servers/databases/subdomains.
 
 # 19. Configuration
 
-Precedence: built-in defaults < YAML file < environment (a local `.env` is loaded
-first when present).
+Precedence, lowest to highest:
 
-* `APP_ENV=development` (default) → `configs/config.yaml`
-* `APP_ENV=production` → `configs/config.production.yaml` + strict validation
-  (rejects the dev JWT secret, short secrets, missing DB password,
-  `sslmode=disable`, wildcard CORS, insecure origins, dev logging, TLS without cert)
-* `CONFIG_PATH` overrides the file selection; a configured-but-missing file is a
-  startup error.
+```text
+built-in defaults  <  configs/config.yaml (shared base)  <  configs/config.<APP_ENV>.yaml
+                   <  environment variables / .env (development)  <  *_FILE secret files
+```
 
-Complete variable list: `README.md` §5, `backend/.env.example`,
-`deploy/env.production.example`. No production domain is compiled in.
+`CONFIG_PATH` replaces the base **and** the profile with one explicit file; a
+configured-but-missing file is a startup error.
+
+| `APP_ENV` | Tier | Profile | Behaviour |
+|---|---|---|---|
+| `development` (default) | `relaxed` | `config.development.yaml` | local machine, console logs, localhost origins, `sslmode=disable` |
+| `staging` | `hardened` | `config.staging.yaml` | strong secrets required, staging host/origin, transport may stay loose |
+| `production` | `strict` | `config.production.yaml` | hardened + HTTPS origins, no `sslmode=disable`, verified remote DB, JSON logs, no dev logging |
+
+An unknown `APP_ENV` is a startup error — never a silent fallback to development
+defaults. Secrets (`AUTH_JWT_SECRET`, `DATABASE_PASSWORD`, rotated keys) come from
+the environment or a `*_FILE` secret file: a YAML file that carries one is rejected
+at startup, and every diagnostic prints them masked (logs, DSN, `--check`).
+
+`store.*` is the only per-deployment policy block (default timezone/status, slug
+bounds, extra reserved slugs). It can only *tighten* the database rules of §12 and
+`docs/DATABASE.md` §2 — the slug pattern, reserved platform paths and the 63
+character ceiling come from the migrations.
+
+```bash
+cd backend && APP_ENV=production go run ./cmd/server --check
+# → valid/tier + redacted summary; makes the deploy gate part of CI
+```
+
+Complete variable list and the validation matrix: `README.md` §5,
+`docs/DEPLOYMENT.md` §1–§2, `backend/.env.example`,
+`deploy/env.staging.example`, `deploy/env.production.example`. No production
+domain is compiled in.
 
 ---
 
@@ -469,7 +492,7 @@ Definition of Done for every feature group:
 |---|---|---|
 | FG1 | Project setup (repo, stack, config, logging, DB tooling, HTTP foundation, PWA shell, docs) | ✅ **complete** |
 | FG2 | Database schema (tenants, stores, audit_logs skeleton, slug rules, store repository + tenant isolation tests) | ✅ **complete** |
-| FG3 | Configuration hardening (secrets management, per-environment profiles) | ⬜ next |
+| FG3 | Configuration hardening (per-environment profiles, secret handling + rotation, stricter production validation, store default overrides) | ✅ **complete** |
 | FG4 | Authentication (login/logout/me, JWT, roles, rate limiting) | ⬜ |
 | FG5 | Tenant/store model + admin store CRUD + isolation tests | ⬜ |
 
@@ -667,4 +690,63 @@ answer must never be "give each store its own server or database".
 
 
 
+
+
+## v1.5 — FG3 (configuration hardening)
+
+**Decisions taken while hardening the configuration**
+
+| # | Decision | Reason |
+|---|---|---|
+| D21 | `APP_ENV` selects an environment **profile**: the shared base (`config.yaml`) is merged first, the profile (`config.<env>.yaml`) second | one binary and one promotable file; a key that is not repeated in the profile keeps the base value instead of being duplicated |
+| D22 | Three validation tiers — `relaxed` (development), `hardened` (staging), `strict` (production) — keyed on the environment | staging and production share the credential rules; a new environment is a table entry, not new validation code |
+| D23 | An unknown `APP_ENV` is a startup error | a typo such as `APP_ENV=prod` previously ran with development defaults and no strictness |
+| D24 | Secrets are never read from YAML: a config file carrying `auth.jwt_secret`, `auth.previous_secrets` or `database.password` is rejected at startup | config files are committed, backed up and read by more processes than a secret file; failing loudly beats silently using a committed value |
+| D25 | `*_FILE` secret sources (systemd `LoadCredential=`, Docker/Kubernetes secrets, `chmod 600` files); the direct variable and its file variant are mutually exclusive | the value never appears in `systemctl show`, `ps e` or `/proc/<pid>/environ`, and setting both must not hide a half-finished rotation |
+| D26 | Secret strength rules (minimum length, deny-list, placeholder markers, no surrounding whitespace) instead of "non-empty" | the realistic production failures are `CHANGE_ME` (the value shipped in the templates) and short/repeated keys, and the message never echoes the value |
+| D27 | `AUTH_JWT_PREVIOUS_SECRETS` (+ `_FILE`) implements the rotation window, bounded to **two** values | zero-downtime signing-key rotation in FG4 without a second credential store; the bound forces the rotation to be finished |
+| D28 | Production additionally requires `logging.encoding=json`, `logging.development=false` and `verify-ca`/`verify-full` when the database host is not loopback | the deployment collects JSON logs via journald/vector and must never ship an unverified database connection |
+| D29 | `store.default_timezone` / `store.default_status` / `store.slug.*` are configurable, validated against the domain constants and can only **tighten** the database rules | per-deployment policy (timezone, slug length, extra reserved paths) without schema drift with the migrations |
+| D30 | Generic format validation: IANA timezone names, bare absolute CORS origins, access token TTL < refresh token TTL, store status enum | typos are caught at startup instead of at the first request |
+| D31 | `staffdisplay-server --check` loads, validates and prints a redacted configuration summary, then exits | deployment gate: a configuration the service would refuse now fails before a restart (and in CI) |
+| D32 | The frontend gets one profile per Vite mode (`.env.development` / `.env.staging` / `.env.production`) and refuses an absolute `VITE_API_BASE_URL` outside development | the single-domain architecture must not depend on CORS or on a compiled-in host |
+
+**Delivered**
+
+* `internal/config`: `profiles.go` (environment table, tiers, base+profile
+  resolution, `APP_ENV` guard), `secrets.go` (`*_FILE` sources, strength rules,
+  rotation list, `Secrets`/`Redacted`/`Summary`), `validate.go` +
+  `validate_tiers.go` (generic rules and the tier table), store-default policy
+  (`StoreConfig`, `SlugPolicyConfig` with `TimezoneOrDefault`, `ValidateSlug`,
+  `IsExtraReservedSlug`).
+* Profiles: `configs/config.yaml` (shared base, environment neutral) plus
+  `config.development.yaml`, `config.staging.yaml`, `config.production.yaml`.
+* Secret handling: `AUTH_JWT_SECRET`, `AUTH_JWT_SECRET_FILE`,
+  `AUTH_JWT_PREVIOUS_SECRETS(_FILE)`, `DATABASE_PASSWORD(_FILE)`; empty env
+  variables no longer wipe a list from a profile (CORS, store policy).
+* `cmd/server --check` + startup log of environment, tier and merged config files.
+* Frontend: `.env.staging`, `dev:staging`/`build:staging`, `src/lib/envProfile.ts`
+  enforced at build time *and* at runtime by `src/services/apiClient.ts`.
+* Env templates: `deploy/env.staging.example`, rewritten
+  `deploy/env.production.example`, `backend/.env.example`.
+* Docs: `docs/DEPLOYMENT.md` §1 (profiles + validation matrix) and §2 (secret
+  handling, generation, rotation), `README.md` §5, this change log.
+* Tests: **141** configuration test cases (profiles, resolution, secrets, rotation,
+  redaction, store policy, tier rules, shipped-profile validation); the full
+  backend suite is **308 passing / 0 failing / 0 skipped** with
+  `TEST_DATABASE_INTEGRATION=1`, frontend **59 passing**.
+
+**Known gaps carried into the next feature groups**
+
+1. `AUTH_JWT_PREVIOUS_SECRETS` is validated but not consumed yet: FG4 verifies a
+   token with the current key first and then with the rotation window.
+2. The `store.*` policy is resolved, validated and exposed, but the service that
+   applies it (create/update) arrives with FG5; the domain keeps its own
+   `store.DefaultTimezone` fallback for callers without configuration.
+3. Per-device display defaults (stand/handheld, 1/4/8/12 items, auto slide,
+   interval, loop, employee status) stay FG16–FG21 — they are device data, not
+   deployment configuration.
+4. Staging has no separate nginx server block yet (FG31); the staging origin is
+   already carried by `config.staging.yaml` and `deploy/env.staging.example`.
+5. `--check` is not wired into a CI workflow file yet (no CI pipeline until FG31+).
 

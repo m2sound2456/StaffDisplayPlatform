@@ -31,6 +31,7 @@ They combine BLUEPRINT §24 with the concrete conventions adopted in FG1.
 |---|---|
 | Backend | Go + Gin, GORM (PostgreSQL), zap logger, viper+godotenv config, testify tests |
 | Backend layout | `cmd/<binary>` + `internal/<concern>`; one concern per package |
+| Configuration | `internal/config`: shared base + `APP_ENV` profile, then env, then `*_FILE` secrets; tiers `relaxed`/`hardened`/`strict` (`docs/DEPLOYMENT.md` §1) |
 | Responses | JSON envelope: success `{"data": …}`, failure `{"error": {"code","message","details"}}` |
 | Errors | `snake_case` machine codes (e.g. `not_found`, `validation_failed`) + human message |
 | IDs | UUID (`github.com/google/uuid`) |
@@ -65,6 +66,10 @@ They combine BLUEPRINT §24 with the concrete conventions adopted in FG1.
 6. Authentication/pairing endpoints are rate limited.
 7. Never log secrets, tokens, passwords or full request bodies of credentials.
 8. No production domain is hard-coded — always configuration driven.
+9. Secrets come from the environment or a `*_FILE` secret file — never from a YAML
+   config file or the repository. Diagnostics use
+   `config.Config.Redacted()`/`Summary()`; `staffdisplay-server --check` proves a
+   configuration (and the tier rules) without starting the service.
 
 ## 6. Testing rules
 

@@ -1,48 +1,38 @@
 # =============================================================================
-# Staff Display Platform — production configuration
-# Selected automatically when APP_ENV=production (or via CONFIG_PATH).
-# Strict validation applies: see internal/config/validate.go
+# Staff Display Platform — production profile (APP_ENV=production)
 # =============================================================================
-
-app:
-  name: staffdisplay
-  timezone: Asia/Bangkok
-  shutdown_grace: 15s
+# Selected automatically when APP_ENV=production (or through CONFIG_PATH).
+# Strict validation applies: see internal/config/validate.go + validate_tiers.go
+# and the matrix in docs/DEPLOYMENT.md §1.
+#
+# Secrets come from the environment or from a *_FILE secret file — never from a
+# YAML file (startup rejects them).
+# =============================================================================
 
 server:
   # Behind nginx: bind to loopback only.
   host: 127.0.0.1
-  port: 8080
-  read_timeout: 15s
-  write_timeout: 30s
-  idle_timeout: 60s
-  # TLS is terminated by nginx by default (see deploy/nginx.conf).
-  tls:
-    enabled: false
-    cert_file: ""
-    key_file: ""
 
 logging:
+  # Structured logs for journald/vector collection.
   development: false
-  level: info
   encoding: json
 
 database:
-  host: 127.0.0.1
-  port: 5432
   user: staffdisplay
-  name: staffdisplay
+  # The production database requires TLS with a verified peer.
   sslmode: require
-  timezone: Asia/Bangkok
-  max_open_connections: 25
-  max_idle_connections: 5
-  connection_max_lifetime: 30m
-
-auth:
-  access_token_ttl: 15m
-  refresh_token_ttl: 720h
 
 cors:
   # Single domain + path architecture: exactly one origin (BLUEPRINT §32).
   allowed_origins:
     - https://display.example.com
+
+store:
+  slug:
+    # A public store URL is a brand asset: at least three characters, and the
+    # operator-only paths are reserved on top of the platform paths.
+    min_length: 3
+    extra_reserved_slugs:
+      - admin
+      - portal

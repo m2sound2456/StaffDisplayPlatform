@@ -21,8 +21,10 @@ Desktop.ini
 !.env.example
 !*.env.example
 # Frontend build-time defaults are intentionally tracked: they contain no secrets
-# and make `npm run dev` / `npm run build` work out of the box.
+# and make `npm run dev` / `npm run build` / `npm run build:staging` work out of
+# the box (one profile per environment, FG3).
 !frontend/.env.development
+!frontend/.env.staging
 !frontend/.env.production
 
 # --- Go (backend) ---

@@ -9,7 +9,9 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:staging": "vite --mode staging",
     "build": "npm run typecheck && vite build",
+    "build:staging": "npm run typecheck && vite build --mode staging",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
